@@ -1,0 +1,435 @@
+---
+title: "Effect of iPhone Settings on Battery Drain: A $2^4$ Factorial Experiment"
+author: "Hazim bin Mohd Izani"
+date: "Spring 2026"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: true
+geometry: margin=0.9in
+fontsize: 11pt
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \usepackage{titlesec}
+  - \titlespacing*{\section}{0pt}{8pt}{4pt}
+  - \titlespacing*{\subsection}{0pt}{6pt}{3pt}
+  - \setlength{\parskip}{3pt}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.width = 6.2, fig.height = 3.6, fig.align = "center", fig.pos = "H"
+)
+options(scipen = 4)
+source("R/helpers.R")
+
+# Compact kable: produces a `table` env wrapped in \small for tighter fit, with H positioning
+ktab = function(df, caption, align, small = TRUE) {
+  k = knitr::kable(df, row.names = FALSE, escape = FALSE,
+                   caption = caption, align = align, booktabs = TRUE,
+                   format = "latex")
+  k = gsub("\\\\begin\\{table\\}", "\\\\begin{table}[H]\\\\centering", k)
+  if (small) k = gsub("\\\\begin\\{table\\}\\[H\\]\\\\centering",
+                       "\\\\begin{table}[H]\\\\centering\\\\small", k)
+  knitr::asis_output(k)
+}
+```
+
+```{r load-and-fit}
+# Load and prepare data
+data = read.csv("data/battery_drain.csv")
+data$DayF = factor(data$Day)
+
+# Pre-compute everything once and reuse downstream
+full_mod = lm(Drain ~ A_Brightness * B_WiFi * C_Workload * D_LowPower + DayF,
+              data = data)
+red_mod  = lm(Drain ~ A_Brightness + B_WiFi + C_Workload + D_LowPower +
+                A_Brightness:C_Workload + C_Workload:D_LowPower + DayF,
+              data = data)
+
+# Effect estimates from saturated model (drop Day terms for the factorial table)
+all_coef = coef(full_mod)
+factorial_coef = all_coef[!grepl("DayF|Intercept", names(all_coef))]
+factorial_effects = 2 * factorial_coef
+
+# Cell summaries for dispersion modeling
+cell = aggregate(Drain ~ A_Brightness + B_WiFi + C_Workload + D_LowPower,
+                 data = data,
+                 FUN = function(x) c(mean = mean(x), var = var(x)))
+cell_df = data.frame(cell[, 1:4],
+                     ybar = cell$Drain[, "mean"],
+                     s2   = cell$Drain[, "var"],
+                     logS2 = log(cell$Drain[, "var"]))
+disp_mod = lm(logS2 ~ A_Brightness * B_WiFi * C_Workload * D_LowPower,
+              data = cell_df)
+
+# Levene's test (Brown-Forsythe variant) by Workload
+levene_by = function(y, group) {
+  g_med = ave(y, group, FUN = median)
+  abs_dev = abs(y - g_med)
+  m = lm(abs_dev ~ factor(group))
+  anova(m)
+}
+lev_C = levene_by(data$Drain, data$C_Workload)
+
+# Convenience pulls for inline R
+sw  = shapiro.test(residuals(red_mod))
+fit_full_vs_red = anova(red_mod, full_mod)
+beta_hat = coef(red_mod)
+ci = confint(red_mod)
+
+# Best/worst predicted cells (from reduced model, averaged over Day)
+grid = expand.grid(A_Brightness = c(-1, 1), B_WiFi = c(-1, 1),
+                   C_Workload = c(-1, 1), D_LowPower = c(-1, 1))
+day_mean = data.frame(DayF = factor(1:3))
+grid_full = merge(grid, day_mean)
+grid_full$pred = predict(red_mod, newdata = grid_full)
+grid_pred = aggregate(pred ~ A_Brightness + B_WiFi + C_Workload + D_LowPower,
+                      data = grid_full, FUN = mean)
+best_cell = grid_pred[which.min(grid_pred$pred), ]
+worst_cell = grid_pred[which.max(grid_pred$pred), ]
+```
+
+# Introduction
+
+Smartphones are integral to daily life and battery longevity is a constant concern. Many iPhone users keep settings like Low Power Mode, screen brightness, WiFi, and active apps in unconsidered defaults without knowing which settings dominate the battery budget. The aim of this study is to quantify, for a single iPhone, **how much each of four common settings contributes to short-term battery drain, and whether any settings interact**.
+
+The research question is: *Among screen brightness, WiFi state, app workload, and Low Power Mode, which factors most reduce battery drain over a 15-minute interval, and are there interaction effects that matter for everyday use?*
+
+A $2^4$ full factorial design with three replicates (one full replicate per day) and **Day** as a blocking factor was used. The design supports estimation of all main effects and interactions as well as a basic dispersion analysis.
+
+# Experimental Design
+
+## Response Variable
+
+Battery percentage drop, $\text{Drain} = \text{BatteryStart} - \text{BatteryEnd}$, recorded over a fixed 15-minute interval at 0.1% precision from the iOS battery statistics view.
+
+## Factors and Levels
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+Factor & Description & Low ($-$) & High ($+$) \\
+\midrule
+A & Screen Brightness & 25\% & 100\% \\
+B & WiFi & Off (Airplane mode) & On (connected) \\
+C & App Workload & Idle (home screen) & Active (looped 1080p video) \\
+D & Low Power Mode & On & Off \\
+\bottomrule
+\end{tabular}
+\caption{Factors and their two levels in coded units. Factor D is reverse-coded so that the high level corresponds to the off state, making "+1" consistently the *higher-drain* setting for an honest sign convention.}
+\end{table}
+
+## Design Choice and Run Protocol
+
+A $2^4$ full factorial gives 16 unique treatment combinations. With $n = 3$ replicates the experiment has 48 runs, using 4 residual degrees of freedom per main effect via the pure-error MSE. This satisfies Section 4 of the textbook for two-level factorials with replication.
+
+**Day** is used as a complete block: each of the three days contains exactly one full replicate of all 16 treatments, randomized within day. Blocking absorbs systematic day-to-day variation (battery health drift, room temperature, charger state) that would otherwise inflate the error variance, following the randomized complete block design (RBD) approach from Section 3.
+
+For each run: the iPhone was charged to approximately 95%, settings applied, then a 15-minute timer started. BatteryStart and BatteryEnd were recorded from iOS battery statistics. The handset was kept stationary on a desk and the same physical environment was maintained throughout.
+
+# Statistical Model
+
+The location model is the saturated regression on coded factors plus a Day block,
+
+$$y_{ijk\ell d} = \mu + \sum_{f \in \{A,B,C,D\}} \beta_f x_f
+  + \sum_{f<f'} \beta_{ff'} x_f x_{f'}
+  + \sum_{f<f'<f''} \beta_{ff'f''} x_f x_{f'} x_{f''}
+  + \beta_{ABCD}\, x_A x_B x_C x_D
+  + \tau_d + \varepsilon_{ijk\ell d},$$
+
+where $x_f \in \{-1, +1\}$, $\tau_d$ is the Day-$d$ block effect ($\sum_d \tau_d = 0$), and $\varepsilon \stackrel{\text{iid}}{\sim} \mathcal{N}(0, \sigma^2)$. With $\pm 1$ coding, the **factorial effect** is $\widehat{E}_f = 2\hat\beta_f$ as in Section 4.4 of the textbook.
+
+For the dispersion analysis, let $s^2_{ijk\ell}$ be the variance of the three replicates within each treatment cell. The dispersion model is
+
+$$\log s^2_{ijk\ell} = \gamma_0 + \sum_f \gamma_f x_f + \sum_{f<f'} \gamma_{ff'} x_f x_{f'} + \cdots + \eta_{ijk\ell},$$
+
+fit by OLS on the 16 cell log-variances.
+
+# Data and Initial Exploration
+
+Data was collected over three consecutive days. Battery drains range from `r min(data$Drain)` to `r max(data$Drain)` percentage points with overall mean `r round(mean(data$Drain), 2)`%. The design is fully balanced: 16 cells $\times$ 3 replicates, 16 runs per day.
+
+```{r cell-table, results='asis'}
+ct = cell_df[order(cell_df$A_Brightness, cell_df$B_WiFi,
+                   cell_df$C_Workload, cell_df$D_LowPower), ]
+ct$ybar  = round(ct$ybar, 2)
+ct$s2    = round(ct$s2, 3)
+ct$logS2 = round(ct$logS2, 2)
+colnames(ct) = c("A","B","C","D","$\\bar y$","$s^2$","$\\ln s^2$")
+ktab(ct, "Cell means and within-cell variances (n = 3 per cell).",
+     align = "ccccccc")
+```
+
+> **Reading the cell table.** The minimum cell mean is `r round(min(cell_df$ybar),2)`% (low brightness, idle, LPM on) and the maximum is `r round(max(cell_df$ybar),2)`% (high brightness, active workload, LPM off, WiFi on). Cells with the active workload show visibly larger $s^2$ on average, foreshadowing a dispersion effect on factor C.
+
+# Location Analysis
+
+## Estimated Effects and Half-Normal Plot
+
+```{r effects-table, results='asis'}
+eff_df = data.frame(Effect = names(factorial_effects),
+                    Estimate = round(as.numeric(factorial_effects), 3))
+eff_df = eff_df[order(-abs(eff_df$Estimate)), ]
+rownames(eff_df) = NULL
+# Compress factor names for a tighter table
+eff_df$Effect = gsub("A_Brightness", "A", eff_df$Effect)
+eff_df$Effect = gsub("B_WiFi", "B", eff_df$Effect)
+eff_df$Effect = gsub("C_Workload", "C", eff_df$Effect)
+eff_df$Effect = gsub("D_LowPower", "D", eff_df$Effect)
+eff_df$Effect = gsub(":", "", eff_df$Effect)
+ktab(eff_df, "Estimated factorial effects, sorted by absolute value.",
+     align = "lc")
+```
+
+```{r half-normal-loc, fig.cap="Half-normal plot of the 15 factorial effects on battery drain. The four main effects (C, A, D, B) and the two-factor interactions A:C and C:D rise above the reference line; the remaining nine effects hug the line and are consistent with noise.", fig.width=5.4, fig.height=2.8, fig.pos="!htb"}
+par(mar = c(3.6, 4, 1.0, 1.5), mgp = c(2.2, 0.7, 0))
+short_names = function(eff) {
+  nm = names(eff)
+  nm = gsub("A_Brightness", "A", nm)
+  nm = gsub("B_WiFi", "B", nm)
+  nm = gsub("C_Workload", "C", nm)
+  nm = gsub("D_LowPower", "D", nm)
+  nm = gsub(":", "", nm)
+  setNames(eff, nm)
+}
+half_normal_plot(full_mod, n_label = 6, drop_terms = "DayF", main = "",
+                 effects = short_names(factorial_effects))
+```
+
+```{r lenth-result, results='hide'}
+lenth_out = lenth_test(factorial_effects)
+PSE = lenth_out$PSE
+ME  = lenth_out$ME
+SME = lenth_out$SME
+```
+
+> **Interpretation of the half-normal plot.** Five effects clearly leave the reference line: workload (C, $\widehat{E} = `r round(factorial_effects["C_Workload"],2)`$), brightness (A, $`r round(factorial_effects["A_Brightness"],2)`$), Low Power Mode (D, $`r round(factorial_effects["D_LowPower"],2)`$), WiFi (B, $`r round(factorial_effects["B_WiFi"],2)`$), and the two-factor interactions A:C and C:D ($`r round(factorial_effects["A_Brightness:C_Workload"],2)`$ each). The largest absolute effect is **workload**, more than 1.8 times the next largest.
+
+Lenth's pseudo standard error gives PSE = `r round(PSE, 3)` with margin of error ME = `r round(ME, 3)` and simultaneous margin of error SME = `r round(SME, 3)`. Effects with $|\widehat{E}_f| > \text{ME}$ are individually significant: A, B, C, D, and (with $n=3$ pure-error backing) the two interactions just below the ME cutoff (`r round(abs(factorial_effects["A_Brightness:C_Workload"]),3)`) are confirmed by the ANOVA below.
+
+## Full ANOVA
+
+```{r full-anova, results='asis'}
+av = anova(full_mod)
+av_df = data.frame(Source = rownames(av),
+                   Df = av$Df,
+                   `Sum Sq` = round(av$`Sum Sq`, 3),
+                   `Mean Sq` = round(av$`Mean Sq`, 3),
+                   `F value` = round(av$`F value`, 2),
+                   `Pr(>F)` = signif(av$`Pr(>F)`, 3),
+                   check.names = FALSE)
+# Compact source labels
+av_df$Source = gsub("A_Brightness", "A", av_df$Source)
+av_df$Source = gsub("B_WiFi", "B", av_df$Source)
+av_df$Source = gsub("C_Workload", "C", av_df$Source)
+av_df$Source = gsub("D_LowPower", "D", av_df$Source)
+av_df$Source = gsub(":", "", av_df$Source)
+av_df$Source = gsub("DayF", "Day", av_df$Source)
+ktab(av_df, "Full factorial ANOVA with Day as a block. Pure-error MSE = 0.143 on 30 df.",
+     align = "lrrrrr")
+```
+
+> **Reading the ANOVA.** The four main effects A, B, C, D are highly significant ($p < 10^{-5}$ for all, $p < 10^{-13}$ for A and C). Two two-factor interactions are also significant: A:C and C:D ($p \approx 7 \times 10^{-4}$). The Day block is not significant ($F = 0.80$, $p = 0.46$); blocking still serves as insurance against undetected day-level drift even when the test fails to reject. No three-way or four-way interaction is significant ($p > 0.14$).
+
+## Reduced Model and Confidence Intervals
+
+Pruning the saturated model to the six significant factorial terms plus the Day block gives the reduced model
+
+$$\widehat{\text{Drain}} = `r round(beta_hat["(Intercept)"], 2)`
++ `r round(beta_hat["A_Brightness"], 3)` x_A
++ `r round(beta_hat["B_WiFi"], 3)` x_B
++ `r round(beta_hat["C_Workload"], 3)` x_C
++ `r round(beta_hat["D_LowPower"], 3)` x_D
++ `r round(beta_hat["A_Brightness:C_Workload"], 3)` x_A x_C
++ `r round(beta_hat["C_Workload:D_LowPower"], 3)` x_C x_D + \tau_d.$$
+
+The reduced model has $R^2 = `r round(summary(red_mod)$r.squared, 3)`$ (adjusted $`r round(summary(red_mod)$adj.r.squared, 3)`$) and residual standard error $\hat\sigma = `r round(summary(red_mod)$sigma, 3)`$. The partial F-test against the saturated model gives $F = `r round(fit_full_vs_red[2,5], 2)`$ ($p = `r round(fit_full_vs_red[2,6], 2)`$), so the dropped terms add no detectable signal.
+
+```{r ci-table, results='asis'}
+ci_df = data.frame(Term = rownames(ci),
+                   Estimate = round(beta_hat, 3),
+                   `2.5\\%` = round(ci[, 1], 3),
+                   `97.5\\%` = round(ci[, 2], 3),
+                   check.names = FALSE)
+ci_df$Term = gsub("A_Brightness", "A", ci_df$Term)
+ci_df$Term = gsub("B_WiFi", "B", ci_df$Term)
+ci_df$Term = gsub("C_Workload", "C", ci_df$Term)
+ci_df$Term = gsub("D_LowPower", "D", ci_df$Term)
+ci_df$Term = gsub(":", "", ci_df$Term)
+ci_df$Term = gsub("DayF", "Day", ci_df$Term)
+rownames(ci_df) = NULL
+ktab(ci_df, "Reduced-model coefficients with 95\\% confidence intervals.",
+     align = "lrrr")
+```
+
+> **Reading the CIs.** No coefficient interval crosses zero except for the Day contrasts. Doubling each coefficient gives the corresponding factorial effect. For example, switching workload from idle to active raises drain by $2 \times `r round(beta_hat["C_Workload"], 3)` = `r round(2*beta_hat["C_Workload"], 2)`$ percentage points on average, with a 95% interval of $[`r round(2*ci["C_Workload",1],2)`, `r round(2*ci["C_Workload",2],2)`]$ over a 15-minute window.
+
+## Significant Interactions
+
+```{r interactions, fig.cap="Two-way interaction plots for the significant interactions A:C (left) and C:D (right). Non-parallel lines indicate the cross-product effect.", fig.width=7.0, fig.height=3.2}
+par(mfrow = c(1, 2), mar = c(4, 4, 2.5, 1.6), mgp = c(2.4, 0.8, 0))
+
+# A:C
+m_AC = tapply(data$Drain, list(data$A_Brightness, data$C_Workload), mean)
+plot(c(-1, 1), m_AC[, "-1"], type = "b", pch = 16, col = "steelblue", lwd = 2,
+     ylim = range(m_AC) + c(-0.3, 0.4), xaxt = "n", xlim = c(-1.15, 1.15),
+     xlab = "A: Brightness", ylab = "Mean Drain (%)",
+     main = "A x C interaction")
+axis(1, at = c(-1, 1), labels = c("-1 (25%)", "+1 (100%)"))
+lines(c(-1, 1), m_AC[, "1"], type = "b", pch = 17, col = "tomato", lwd = 2)
+legend("topleft", legend = c("C = -1 (Idle)", "C = +1 (Active)"),
+       col = c("steelblue", "tomato"), pch = c(16, 17), lwd = 2,
+       cex = 0.85, bty = "n")
+
+# C:D
+m_CD = tapply(data$Drain, list(data$C_Workload, data$D_LowPower), mean)
+plot(c(-1, 1), m_CD[, "-1"], type = "b", pch = 16, col = "steelblue", lwd = 2,
+     ylim = range(m_CD) + c(-0.3, 0.4), xaxt = "n", xlim = c(-1.15, 1.15),
+     xlab = "C: Workload", ylab = "Mean Drain (%)",
+     main = "C x D interaction")
+axis(1, at = c(-1, 1), labels = c("-1 (Idle)", "+1 (Active)"))
+lines(c(-1, 1), m_CD[, "1"], type = "b", pch = 17, col = "tomato", lwd = 2)
+legend("topleft", legend = c("D = -1 (LPM On)", "D = +1 (LPM Off)"),
+       col = c("steelblue", "tomato"), pch = c(16, 17), lwd = 2,
+       cex = 0.85, bty = "n")
+par(mfrow = c(1, 1))
+```
+
+> **Reading the interaction plots.** A:C shows that brightness costs more battery when the workload is active (the orange line is steeper). The two effects compound: the display and the CPU are both active and pull more current together than the sum of their individual contributions. C:D shows that Low Power Mode delivers larger savings when the workload is active, because LPM throttles CPU and background work, which is exactly what an active app uses.
+
+# Dispersion Analysis
+
+```{r disp-half-normal, fig.cap="Half-normal plot of the 15 dispersion effects on $\\log s^2$ across the 16 cells. With only $n=3$ replicates per cell, no dispersion effect rises decisively above the reference line.", fig.width=5.6, fig.height=2.8, fig.pos="!htb"}
+par(mar = c(3.6, 4, 1.0, 1.5), mgp = c(2.2, 0.7, 0))
+disp_effects = 2 * coef(disp_mod)[-1]
+half_normal_plot(disp_mod, n_label = 3, main = "",
+                 effects = short_names(disp_effects))
+```
+
+The half-normal of dispersion effects is **noisy**, which is expected: each cell variance is estimated from only $n = 3$ replicates, so $\log s^2$ has roughly two degrees of freedom per cell. No dispersion effect rises decisively above the reference line. To get a more reliable read on whether *any* factor governs variability I use Levene's test (Brown-Forsythe variant) directly on the raw data grouped by Workload:
+
+```{r levene-text, results='asis'}
+cat(sprintf("Levene's test (groups defined by C_Workload) gives $F = %.2f$ on $1, %d$ df with $p = %.4f$.",
+            lev_C[1, "F value"], lev_C[2, "Df"], lev_C[1, "Pr(>F)"]))
+```
+
+> **Interpretation.** Cell-level dispersion modeling is underpowered with $n = 3$, but Levene's test using the raw observations (48 points) cleanly rejects equal variances across the two workload levels. The active-workload cells are about twice as variable as the idle cells (mean cell variance of `r round(mean(cell_df$s2[cell_df$C_Workload == 1]), 3)` versus `r round(mean(cell_df$s2[cell_df$C_Workload == -1]), 3)`). Practically, an active workload is both *higher in mean drain and harder to predict run-to-run*. This matters when battery decisions need to be reliable, not just average-good.
+
+# Residual Diagnostics
+
+```{r diagnostics, fig.cap="Residual diagnostics for the reduced model.", fig.width=6.5, fig.height=4.6}
+par(mar = c(4, 4, 2, 1))
+diagnostic_panel(red_mod)
+```
+
+```{r shapiro-out}
+swp = sw$p.value
+swW = sw$statistic
+```
+
+> **Reading the diagnostics.** Residuals vs. fitted shows mild fanning at higher fitted values, consistent with the workload-driven heteroscedasticity already detected by Levene's test. The Q-Q plot is close to linear; Shapiro-Wilk gives $W = `r round(swW, 3)`$, $p = `r round(swp, 3)`$, so the normality assumption is not contradicted. The run-order plot shows no trend, supporting independence (the within-day randomization is doing its job). The fanning is mild enough that inferences from the reduced model on the *means* remain trustworthy; the dispersion analysis above is the proper accounting of the variance structure.
+
+# Results, Recommendations, and Robust-Design Lens
+
+## Significant Effect Summary
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrl}
+\toprule
+Effect & Estimate (\%) & 95\% CI & Direction \\
+\midrule
+A: Brightness        & `r round(2*beta_hat["A_Brightness"],2)` & [`r round(2*ci["A_Brightness",1],2)`, `r round(2*ci["A_Brightness",2],2)`] & Higher brightness $\Rightarrow$ more drain \\
+B: WiFi              & `r round(2*beta_hat["B_WiFi"],2)` & [`r round(2*ci["B_WiFi",1],2)`, `r round(2*ci["B_WiFi",2],2)`] & WiFi on $\Rightarrow$ more drain \\
+C: Workload          & `r round(2*beta_hat["C_Workload"],2)` & [`r round(2*ci["C_Workload",1],2)`, `r round(2*ci["C_Workload",2],2)`] & Active app $\Rightarrow$ more drain \\
+D: Low Power Mode    & `r round(2*beta_hat["D_LowPower"],2)` & [`r round(2*ci["D_LowPower",1],2)`, `r round(2*ci["D_LowPower",2],2)`] & LPM off $\Rightarrow$ more drain \\
+A:C                  & `r round(2*beta_hat["A_Brightness:C_Workload"],2)` & [`r round(2*ci["A_Brightness:C_Workload",1],2)`, `r round(2*ci["A_Brightness:C_Workload",2],2)`] & Bright + Active super-additive \\
+C:D                  & `r round(2*beta_hat["C_Workload:D_LowPower"],2)` & [`r round(2*ci["C_Workload:D_LowPower",1],2)`, `r round(2*ci["C_Workload:D_LowPower",2],2)`] & LPM helps more under load \\
+\bottomrule
+\end{tabular}
+\caption{All factorial effects significant at the 0.001 level. Estimates are the change in 15-minute drain when moving from low to high level (effect = $2 \hat\beta$).}
+\end{table}
+
+## Best and Worst Settings
+
+The reduced model's predicted minimum drain over a 15-minute window is
+
+$$\boxed{\widehat{\text{Drain}}_{\min} = `r round(best_cell$pred, 2)`\%
+\text{ at } (A,B,C,D) = (`r best_cell$A_Brightness`, `r best_cell$B_WiFi`,
+`r best_cell$C_Workload`, `r best_cell$D_LowPower`)},$$
+
+i.e., **brightness 25%, WiFi off, idle workload, Low Power Mode on**. The predicted maximum is `r round(worst_cell$pred, 2)`% at the all-high corner. The total span across the 16 cells is roughly `r round(worst_cell$pred - best_cell$pred, 1)` percentage points per 15 minutes, which extrapolates to a `r round((worst_cell$pred - best_cell$pred)*4, 0)` percentage-point gap per hour of use.
+
+## Robust-Design Lens (Section 6 framing)
+
+In the field, the user does not always control workload: they want to use the phone, sometimes for video, sometimes idle. Treat C as a **noise factor** and A, B, D as **control factors** (in the cross-array sense of Section 6). The fitted model lets us look at the conditional effect of each control factor at both levels of C:
+
+```{r robust-design, results='asis'}
+# Effect of A at C=-1 vs C=+1 (using the reduced model)
+A_at_Cm = 2 * (beta_hat["A_Brightness"] + (-1) * beta_hat["A_Brightness:C_Workload"])
+A_at_Cp = 2 * (beta_hat["A_Brightness"] + (+1) * beta_hat["A_Brightness:C_Workload"])
+D_at_Cm = 2 * (beta_hat["D_LowPower"]  + (-1) * beta_hat["C_Workload:D_LowPower"])
+D_at_Cp = 2 * (beta_hat["D_LowPower"]  + (+1) * beta_hat["C_Workload:D_LowPower"])
+B_at_Cm = 2 * beta_hat["B_WiFi"]; B_at_Cp = B_at_Cm
+tab = data.frame(Control = c("A: Brightness", "B: WiFi", "D: LPM off"),
+                 `Effect at C=-1 (Idle)` = round(c(A_at_Cm, B_at_Cm, D_at_Cm), 2),
+                 `Effect at C=+1 (Active)` = round(c(A_at_Cp, B_at_Cp, D_at_Cp), 2),
+                 check.names = FALSE)
+knitr::kable(tab, row.names = FALSE,
+             caption = "Conditional effect of each control factor at the two levels of the noise factor C.",
+             align = "lrr", booktabs = TRUE)
+```
+
+> **Robust read.** Brightness and Low Power Mode have a **larger** effect on drain when workload is active. So a user who *sometimes* runs heavy apps benefits more from dimming and from leaving Low Power Mode on than a user who is mostly idle. The two-step optimization recommended in Section 6 (first reduce dispersion, then adjust mean) coincides here: turning workload down also reduces variability (the C dispersion result), and within active workload, LPM and dim brightness shave the most off the mean.
+
+## Practical Recommendations
+
+1. **Workload dominates everything.** Closing active apps and pausing video saves about `r round(2*beta_hat["C_Workload"], 1)`% of battery per 15 minutes (`r round(2*beta_hat["C_Workload"]*4, 0)`%/hour). This single change is larger than all other factors combined.
+2. **Use Low Power Mode whenever realistic.** Worth roughly `r round(2*beta_hat["D_LowPower"], 1)`% per 15 minutes on average, and *more* under heavy use (the C:D interaction).
+3. **Dim the screen.** A move from 100% to 25% brightness saves roughly `r round(2*beta_hat["A_Brightness"], 1)`% per 15 minutes; the savings grow when workload is high.
+4. **WiFi matters less.** Turning WiFi off saves only about `r round(2*beta_hat["B_WiFi"], 1)`% per 15 minutes. It is statistically real but small enough to ignore in everyday decisions.
+
+# Limitations and Future Work
+
+1. **Single device.** All runs used one iPhone. Effects could differ on other models or with different battery health.
+2. **Three-day window.** Day was non-significant in this study, but a longer span could expose battery aging.
+3. **Discretization at 0.1%.** Sub-tenth-of-a-percent variation is absorbed into the residual.
+4. **Workload definition.** "Active" was a single video loop; gaming or navigation would likely produce a steeper drain and possibly different interaction patterns.
+5. **Scaling.** With more candidate factors (cellular, location services, Bluetooth, etc.) the run count of a full factorial blows up. A resolution-IV $2^{k-1}$ fractional design (Section 5) would keep all main effects clear of two-factor interactions while halving the run count, at the cost of aliasing some two-factor pairs. The two interactions identified here (A:C, C:D) would alias with B:D and A:B respectively under the standard $I = ABCD$ defining relation, so a follow-up fold-over would be needed to resolve them.
+6. **Dispersion power.** With $n = 3$ replicates the cell-variance analysis is underpowered. A future study with $n = 5$ or $n = 6$ would let the dispersion half-normal speak for itself.
+
+\newpage
+
+# Appendix A: Experimental Data
+
+All 48 runs of the $2^4$ design with three replicates (one full replicate per Day, randomized within Day).
+
+```{r data-listing, results='asis'}
+dlist = data[order(data$Run), c("Run","Day","A_Brightness","B_WiFi",
+                                "C_Workload","D_LowPower",
+                                "BatteryStart","BatteryEnd","Drain")]
+dlist$BatteryStart = sprintf("%.1f", dlist$BatteryStart)
+dlist$BatteryEnd   = sprintf("%.1f", dlist$BatteryEnd)
+dlist$Drain        = sprintf("%.1f", dlist$Drain)
+colnames(dlist) = c("Run","Day","A","B","C","D","Start","End","Drain")
+k = knitr::kable(dlist, row.names = FALSE, escape = FALSE,
+                 caption = "Full experimental dataset (48 runs).",
+                 align = "rrrrrrrrr", booktabs = TRUE, format = "latex",
+                 linesep = "")
+k = gsub("\\\\begin\\{table\\}",
+         "\\\\begin{table}[H]\\\\centering\\\\footnotesize", k)
+knitr::asis_output(k)
+```
+
+# Appendix B: R Code
+
+The complete analysis code is reproduced below. Helper functions live in `R/helpers.R` and the dataset in `data/battery_drain.csv`.
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```

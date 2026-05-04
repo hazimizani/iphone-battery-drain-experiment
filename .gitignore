@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+
+# R session/history
+.Rhistory
+.Rdata
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj
+
+# LaTeX intermediate files (from rmarkdown/PDF rendering)
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+*.nav
+*.snm
+*.vrb
+*.tex
+
+# knitr cache and figures
+*_cache/
+*_files/
+
+# Editor
+.vscode/
+.idea/
+
+# Course-provided materials (not part of this personal project)
+Project_requirements_*.pdf
+Sample Projects/
