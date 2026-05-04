@@ -21,18 +21,17 @@ A designed experiment investigating how four user-controlled iPhone settings aff
 
 ```
 .
-├── proposal.Rmd / proposal.pdf   Initial experiment proposal
-├── report.Rmd   / report.pdf     Final analysis and write-up
+├── report.Rmd / report.pdf   Analysis and write-up
 ├── data/
-│   ├── battery_drain.csv         Run-level data (48 rows)
-│   └── README.md                 Data dictionary
+│   ├── battery_drain.csv     Run-level data (48 rows)
+│   └── README.md             Data dictionary
 └── R/
-    ├── helpers.R                 Reusable analysis functions
-    │                              (half-normal plot, effect calc,
-    │                              interaction panel, diagnostics,
-    │                              Lenth's test)
-    └── simulate_data.R           Reproducible data simulator
-                                   (set.seed used)
+    ├── helpers.R             Reusable analysis functions
+    │                          (half-normal plot, effect calc,
+    │                          interaction panel, diagnostics,
+    │                          Lenth's test)
+    └── simulate_data.R       Reproducible data simulator
+                               (set.seed used)
 ```
 
 ## Reproducing the Analysis
